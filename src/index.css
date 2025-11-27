@@ -1,0 +1,11 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  margin: 0;
+  background-color: #F2F2F7;
+  font-family: system-ui, -apple-system, sans-serif;
+}
+.dark body { background-color: #000000; }
+.no-scrollbar::-webkit-scrollbar { display: none; }
