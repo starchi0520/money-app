@@ -41,7 +41,9 @@ import {
   GripVertical,
   Upload,
   User,
-  Edit3
+  Edit3,
+  AlertTriangle,
+  RotateCcw
 } from 'lucide-react';
 
 // --- 1. 常量与配置 ---
@@ -181,13 +183,15 @@ function usePersistedState(key, defaultValue) {
       const item = window.localStorage.getItem(key);
       if (item) {
           const parsed = JSON.parse(item);
-          // Simple type check
-          if (typeof defaultValue === 'string' && typeof parsed !== 'string') return defaultValue;
-          if (Array.isArray(defaultValue) && !Array.isArray(parsed)) return defaultValue;
+          // Simple validation to prevent crash loops from bad data
+          if (key.includes('transactions') && !Array.isArray(parsed)) return defaultValue;
+          if (key.includes('accounts') && (!Array.isArray(parsed) || parsed.length === 0)) return defaultValue;
+          if (key.includes('currencies') && (!Array.isArray(parsed) || parsed.length === 0)) return defaultValue;
           return parsed;
       }
       return defaultValue;
     } catch (error) {
+      console.warn(`Error reading ${key} from localStorage`, error);
       return defaultValue;
     }
   });
@@ -247,6 +251,12 @@ export default function App() {
   const [theme, setTheme] = useTheme();
   const [showFeedback, setShowFeedback] = useState(false);
   const [feedbackText, setFeedbackText] = useState('');
+
+  // 数据完整性检查与自动修复
+  useEffect(() => {
+      if (!accounts || accounts.length === 0) setAccounts(INITIAL_ACCOUNTS_DATA);
+      if (!currencies || currencies.length === 0) setCurrencies(DEFAULT_CURRENCIES);
+  }, []);
 
   // 核心：汇率更新逻辑
   useEffect(() => {
@@ -370,10 +380,21 @@ export default function App() {
       setCurrencies([...currencies, newCurrency]);
   };
 
+  // Emergency Reset (Debug util)
+  const resetAllData = () => {
+      if(confirm("确定要重置所有数据吗？这将清除所有账单并恢复默认设置。")) {
+          setTransactions([]);
+          setAccounts(INITIAL_ACCOUNTS_DATA);
+          setCurrencies(DEFAULT_CURRENCIES);
+          window.localStorage.clear();
+          window.location.reload();
+      }
+  }
+
   return (
     <div className="relative w-full h-screen bg-[#F2F2F7] dark:bg-[#000000] font-sans text-gray-900 dark:text-white overflow-hidden flex flex-col transition-colors duration-500 ease-in-out">
       {/* Status Bar */}
-      <div className="w-full h-11 bg-transparent flex items-end justify-between pb-2 px-6 shrink-0 z-20 absolute top-0 left-0">
+      <div className="w-full h-11 bg-transparent flex items-end justify-between pb-2 px-6 shrink-0 z-20 absolute top-0 left-0 pointer-events-none">
           <span className="text-[10px] font-mono text-gray-500 dark:text-gray-400 flex items-center gap-1">
               <Cloud size={10} /> iCloud Synced
           </span>
@@ -384,7 +405,7 @@ export default function App() {
 
       {/* Feedback Notification */}
       {showFeedback && (
-          <div className="absolute top-14 left-4 right-4 z-[60] animate-in slide-in-from-top-4 fade-in duration-500">
+          <div className="absolute top-14 left-4 right-4 z-[60] animate-in slide-in-from-top-4 fade-in duration-500 pointer-events-none">
               <div className="bg-white/80 dark:bg-[#1C1C1E]/80 backdrop-blur-xl shadow-[0_8px_32px_rgba(0,0,0,0.12)] rounded-2xl p-4 flex items-center gap-3 border border-white/20 dark:border-gray-700/50">
                   <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-green-400 to-emerald-500 flex items-center justify-center text-white shadow-lg shadow-green-500/30 shrink-0">
                       <Sparkles size={20} />
@@ -429,6 +450,7 @@ export default function App() {
             setSettings={setSettings}
             accounts={accounts}
             onReorderAccounts={handleReorderAccounts}
+            onReset={resetAllData}
           />
         )}
       </div>
@@ -447,6 +469,7 @@ export default function App() {
           defaultAccountId={settings.defaultAccountId}
           onClose={() => setShowAddModal(false)} 
           onSave={handleAddTransaction}
+          onReset={resetAllData}
         />
       )}
     </div>
@@ -843,7 +866,7 @@ function StatsView({ transactions, accounts, rates }) {
   );
 }
 
-function SettingsView({ userAvatar, setUserAvatar, userNickname, setUserNickname, theme, setTheme, currencies, onAddCurrency, settings, setSettings, accounts, onReorderAccounts }) {
+function SettingsView({ userAvatar, setUserAvatar, userNickname, setUserNickname, theme, setTheme, currencies, onAddCurrency, settings, setSettings, accounts, onReorderAccounts, onReset }) {
     const [toggles, setToggles] = useState({ icloud: true, faceid: false, notify: true });
     const [showAvatarSelector, setShowAvatarSelector] = useState(false);
     const [isAddingCurrency, setIsAddingCurrency] = useState(false);
@@ -998,7 +1021,7 @@ function SettingsView({ userAvatar, setUserAvatar, userNickname, setUserNickname
                           </button>
                           <button 
                             onClick={() => onReorderAccounts(idx, 'down')}
-                            disabled={idx === accounts.length - 1} 
+                            disabled={idx === (accounts?.length || 0) - 1} 
                             className="p-1.5 rounded-lg bg-gray-100 dark:bg-gray-800 text-gray-500 disabled:opacity-30 hover:bg-gray-200 dark:hover:bg-gray-700"
                           >
                               <ArrowDown size={14} />
@@ -1042,9 +1065,20 @@ function SettingsView({ userAvatar, setUserAvatar, userNickname, setUserNickname
             label="汇率源" 
             value={settings.rateSource} 
             icon={<ArrowRightLeft size={18} />} 
-            isLast 
             onClick={changeRateSource}
         />
+
+        {/* Reset Button */}
+        <div 
+            onClick={onReset}
+            className="flex items-center justify-between p-5 border-t border-gray-50 dark:border-gray-800 active:bg-red-50 dark:active:bg-red-900/20 transition-colors cursor-pointer group"
+        >
+            <div className="flex items-center space-x-4">
+                <div className="bg-red-50 dark:bg-red-900/20 text-red-500 p-2 rounded-lg"><Trash2 size={18} /></div>
+                <span className="text-sm font-bold text-red-600 dark:text-red-400">重置所有数据</span>
+            </div>
+            <ChevronRight size={16} className="text-red-300" />
+        </div>
       </div>
     </div>
   );
@@ -1132,7 +1166,7 @@ function TabIcon({ icon, label, isActive, onClick }) {
 }
 
 // --- 添加交易模态框 (Robust Version) ---
-function AddTransactionModal({ onClose, onSave, accounts = [], rates = {}, currencies = [], defaultAccountId }) {
+function AddTransactionModal({ onClose, onSave, accounts = [], rates = {}, currencies = [], defaultAccountId, onReset }) {
   const [mode, setMode] = useState('expense'); 
   const [amount, setAmount] = useState('');
   
@@ -1186,10 +1220,16 @@ function AddTransactionModal({ onClose, onSave, accounts = [], rates = {}, curre
   if (!currency || !selectedAccount) {
       return (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 backdrop-blur-md">
-            <div className="bg-white dark:bg-[#1C1C1E] p-6 rounded-2xl flex flex-col items-center">
-                <Loader2 size={24} className="animate-spin mb-2 text-blue-500" />
-                <p className="text-sm text-gray-500">正在初始化数据...</p>
-                <button onClick={onClose} className="mt-4 text-xs text-gray-400 underline">取消</button>
+            <div className="bg-white dark:bg-[#1C1C1E] p-6 rounded-2xl flex flex-col items-center shadow-2xl max-w-xs text-center">
+                <AlertTriangle size={32} className="text-orange-500 mb-3" />
+                <h3 className="font-bold text-gray-900 dark:text-white mb-2">数据初始化异常</h3>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">未能加载账户或币种信息。请尝试重置数据。</p>
+                <div className="flex gap-3 w-full">
+                    <button onClick={onClose} className="flex-1 py-2 rounded-xl bg-gray-100 dark:bg-gray-800 text-xs font-bold text-gray-600 dark:text-gray-300">取消</button>
+                    <button onClick={onReset} className="flex-1 py-2 rounded-xl bg-red-500 text-white text-xs font-bold flex items-center justify-center gap-1">
+                        <RotateCcw size={12} /> 重置数据
+                    </button>
+                </div>
             </div>
         </div>
       );
