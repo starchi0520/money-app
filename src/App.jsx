@@ -3,7 +3,9 @@ import {
   Wallet, Plus, Settings, ChevronRight, Search, TrendingUp, CreditCard, X, Camera, Loader2, Sparkles, MessageSquareQuote, PieChart, Landmark, Coins, ArrowRightLeft, Eye, EyeOff, Bell, Share2, CalendarClock, ArrowRight, RefreshCw, Moon, Sun, Smartphone, CheckCircle2, DollarSign, Cloud, Activity, Layers, MinusCircle, Trash2, Briefcase, LineChart, Gift, ArrowUp, ArrowDown, GripVertical, Upload, User, Edit3, AlertTriangle, RotateCcw
 } from 'lucide-react';
 
-// --- 1. 常量与配置 ---
+// ==========================================
+// 1. 常量与配置
+// ==========================================
 
 const FEEDBACK_QUOTES = [
   "存钱是成年人顶级的自律。", "每一笔支出都是为您想要的生活投票。", "理性消费，感性生活。",
@@ -64,6 +66,7 @@ const ACCOUNT_TYPES = [
   { id: 'cash', name: '现金', icon: '💵', type: 'asset' },
 ];
 
+// 默认账户：余额重置为 0
 const INITIAL_ACCOUNTS_DATA = [
   { id: 'acc_alipay', name: '支付宝', type: 'wallet', balance: 0.00, currency: 'CNY', icon: '🔵', color: 'from-blue-500 to-blue-600' },
   { id: 'acc_wechat', name: '微信钱包', type: 'wallet', balance: 0.00, currency: 'CNY', icon: '🟢', color: 'from-green-500 to-emerald-600' },
@@ -93,7 +96,71 @@ const INCOME_CATEGORIES = [
   { id: 'other_income', name: '其他', icon: '💎', color: 'bg-emerald-500' },
 ];
 
-// --- 2. 基础组件 (定义在 App 之前，防止 ReferenceError) ---
+// --- 2. 工具函数与 Hooks ---
+
+const callGemini = async (prompt, base64Image = null, mimeType = 'image/jpeg') => {
+  const apiKey = ""; 
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+  let parts = [{ text: prompt }];
+  if (base64Image) parts.push({ inlineData: { mimeType: mimeType, data: base64Image } });
+  try {
+    const response = await fetch(url, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ contents: [{ parts: parts }] })
+    });
+    if (!response.ok) throw new Error(`API Error: ${response.status}`);
+    const data = await response.json();
+    return data.candidates?.[0]?.content?.parts?.[0]?.text || null;
+  } catch (error) { return null; }
+};
+
+function usePersistedState(key, defaultValue) {
+  const [state, setState] = useState(() => {
+    try {
+      const item = window.localStorage.getItem(key);
+      if (item) {
+          const parsed = JSON.parse(item);
+          // 数据完整性自愈逻辑：检查解析后的数据类型是否符合预期
+          if (defaultValue === null && parsed !== null) return parsed;
+          if (typeof defaultValue === 'string' && typeof parsed !== 'string') return defaultValue;
+          if (Array.isArray(defaultValue) && !Array.isArray(parsed)) return defaultValue;
+          if (typeof defaultValue === 'object' && !Array.isArray(defaultValue) && (typeof parsed !== 'object' || Array.isArray(parsed))) return defaultValue;
+          return parsed;
+      }
+      return defaultValue;
+    } catch (error) {
+      return defaultValue;
+    }
+  });
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(key, JSON.stringify(state));
+    } catch (error) { console.error(error); }
+  }, [key, state]);
+
+  return [state, setState];
+}
+
+function useTheme() {
+    const [theme, setTheme] = usePersistedState('app_theme', 'system'); 
+    useEffect(() => {
+        const root = window.document.documentElement;
+        const systemDark = window.matchMedia('(prefers-color-scheme: dark)');
+        const applyTheme = () => {
+            if (theme === 'dark' || (theme === 'system' && systemDark.matches)) root.classList.add('dark');
+            else root.classList.remove('dark');
+        };
+        applyTheme();
+        systemDark.addEventListener('change', applyTheme);
+        return () => systemDark.removeEventListener('change', applyTheme);
+    }, [theme]);
+    return [theme, setTheme];
+}
+
+// ==========================================
+// 3. 基础 UI 组件 (必须在 App 之前定义)
+// ==========================================
 
 function ScanningOverlay({ isVisible }) {
   if (!isVisible) return null;
@@ -108,27 +175,14 @@ function ScanningOverlay({ isVisible }) {
         <p className="text-lg font-bold tracking-wide">Gemini 正在分析...</p>
         <p className="text-sm text-white/50 mt-2 font-medium">智能识别金额、商户与日期</p>
       </div>
-      <style jsx>{`
-        @keyframes scan-line {
-          0% { top: 0; opacity: 0; }
-          10% { opacity: 1; }
-          90% { opacity: 1; }
-          100% { top: 100%; opacity: 0; }
-        }
-        .animate-scan-line {
-          animation: scan-line 2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
-        }
-      `}</style>
+      <style jsx>{`@keyframes scan-line { 0% { top: 0; opacity: 0; } 10% { opacity: 1; } 90% { opacity: 1; } 100% { top: 100%; opacity: 0; } } .animate-scan-line { animation: scan-line 2s cubic-bezier(0.4, 0, 0.2, 1) infinite; }`}</style>
     </div>
   );
 }
 
 function TabIcon({ icon, label, isActive, onClick }) {
   return (
-    <button 
-      onClick={onClick}
-      className={`flex flex-col items-center space-y-1.5 w-16 transition-all duration-300 ${isActive ? 'text-black dark:text-white scale-105' : 'text-gray-400 dark:text-gray-600 hover:text-gray-500 dark:hover:text-gray-500'}`}
-    >
+    <button onClick={onClick} className={`flex flex-col items-center space-y-1.5 w-16 transition-all duration-300 ${isActive ? 'text-black dark:text-white scale-105' : 'text-gray-400 dark:text-gray-600 hover:text-gray-500 dark:hover:text-gray-500'}`}>
       {icon}
       <span className="text-[10px] font-bold tracking-wide">{label}</span>
     </button>
@@ -138,43 +192,14 @@ function TabIcon({ icon, label, isActive, onClick }) {
 function TabBar({ activeTab, setActiveTab, onAdd }) {
   return (
     <div className="absolute bottom-0 left-0 w-full h-[92px] bg-white/80 dark:bg-[#000000]/80 backdrop-blur-xl border-t border-gray-200/50 dark:border-gray-800/50 flex justify-around items-start pt-4 z-50 pb-8 transition-colors duration-300">
-      <TabIcon 
-        icon={<Wallet size={24} strokeWidth={2.5} />} 
-        label="账单" 
-        isActive={activeTab === 'home'} 
-        onClick={() => setActiveTab('home')} 
-      />
-      
-      <TabIcon 
-        icon={<Landmark size={24} strokeWidth={2.5} />} 
-        label="资产" 
-        isActive={activeTab === 'assets'} 
-        onClick={() => setActiveTab('assets')} 
-      />
-
+      <TabIcon icon={<Wallet size={24} strokeWidth={2.5} />} label="账单" isActive={activeTab === 'home'} onClick={() => setActiveTab('home')} />
+      <TabIcon icon={<Landmark size={24} strokeWidth={2.5} />} label="资产" isActive={activeTab === 'assets'} onClick={() => setActiveTab('assets')} />
       <div className="relative -top-8 group">
         <div className="absolute inset-0 bg-blue-500 blur-xl opacity-30 group-hover:opacity-50 transition-opacity rounded-full"></div>
-        <button 
-          onClick={onAdd}
-          className="relative w-16 h-16 bg-black dark:bg-white rounded-full text-white dark:text-black flex items-center justify-center shadow-2xl shadow-blue-500/20 transform transition-all duration-300 active:scale-90 hover:-translate-y-1"
-        >
-          <Plus size={32} strokeWidth={3} />
-        </button>
+        <button onClick={onAdd} className="relative w-16 h-16 bg-black dark:bg-white rounded-full text-white dark:text-black flex items-center justify-center shadow-2xl shadow-blue-500/20 transform transition-all duration-300 active:scale-90 hover:-translate-y-1"><Plus size={32} strokeWidth={3} /></button>
       </div>
-
-      <TabIcon 
-        icon={<PieChart size={24} strokeWidth={2.5} />} 
-        label="统计" 
-        isActive={activeTab === 'stats'} 
-        onClick={() => setActiveTab('stats')} 
-      />
-
-      <TabIcon 
-        icon={<Settings size={24} strokeWidth={2.5} />} 
-        label="设置" 
-        isActive={activeTab === 'settings'} 
-        onClick={() => setActiveTab('settings')} 
-      />
+      <TabIcon icon={<PieChart size={24} strokeWidth={2.5} />} label="统计" isActive={activeTab === 'stats'} onClick={() => setActiveTab('stats')} />
+      <TabIcon icon={<Settings size={24} strokeWidth={2.5} />} label="设置" isActive={activeTab === 'settings'} onClick={() => setActiveTab('settings')} />
     </div>
   );
 }
@@ -183,12 +208,8 @@ function TransactionItem({ transaction, isLast }) {
   const isExpense = transaction.type === 'expense';
   const isIncome = transaction.type === 'income';
   let category = EXPENSE_CATEGORIES.find(c => c.name === transaction.category);
-  
-  if (isIncome) {
-      category = INCOME_CATEGORIES.find(c => c.name === transaction.category) || INCOME_CATEGORIES[4];
-  } else {
-      category = category || EXPENSE_CATEGORIES[7];
-  }
+  if (isIncome) category = INCOME_CATEGORIES.find(c => c.name === transaction.category) || INCOME_CATEGORIES[4];
+  else category = category || EXPENSE_CATEGORIES[7];
 
   const isCrypto = ['BTC', 'ETH', 'USDT', 'USDC'].includes(transaction.currency);
   const isTransfer = transaction.type === 'transfer';
@@ -196,19 +217,13 @@ function TransactionItem({ transaction, isLast }) {
   if (isTransfer) {
      return (
         <div className={`flex items-center p-4 hover:bg-gray-50 dark:hover:bg-white/5 transition-colors cursor-default group ${!isLast ? 'border-b border-gray-50 dark:border-gray-800' : ''}`}>
-            <div className={`w-10 h-10 rounded-full bg-gray-100 dark:bg-gray-800 flex items-center justify-center text-gray-500 dark:text-gray-300 text-lg mr-4 shrink-0`}>
-                <ArrowRightLeft size={18} />
-            </div>
+            <div className={`w-10 h-10 rounded-full bg-gray-100 dark:bg-gray-800 flex items-center justify-center text-gray-500 dark:text-gray-300 text-lg mr-4 shrink-0`}><ArrowRightLeft size={18} /></div>
              <div className="flex-1 min-w-0">
                 <div className="flex justify-between items-center mb-0.5">
-                <h4 className="font-bold text-gray-900 dark:text-white text-sm">转账还款</h4>
-                <span className="font-bold text-gray-900 dark:text-white text-sm font-mono">
-                    ¥{transaction.cnyAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                </span>
+                <h4 className="font-bold text-gray-900 dark:text-white text-sm">{transaction.category || '转账还款'}</h4>
+                <span className="font-bold text-gray-900 dark:text-white text-sm font-mono">¥{transaction.cnyAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                 </div>
-                <div className="text-xs text-gray-400 dark:text-gray-500">
-                    {transaction.note || '账户互转'}
-                </div>
+                <div className="text-xs text-gray-400 dark:text-gray-500">{transaction.note || '账户互转'}</div>
             </div>
         </div>
      )
@@ -216,9 +231,7 @@ function TransactionItem({ transaction, isLast }) {
 
   return (
     <div className={`flex items-center p-4 hover:bg-gray-50 dark:hover:bg-white/5 transition-colors cursor-default group ${!isLast ? 'border-b border-gray-50 dark:border-gray-800' : ''}`}>
-      <div className={`w-10 h-10 rounded-xl ${category.color} flex items-center justify-center text-white text-lg mr-4 shadow-md shadow-gray-200 dark:shadow-none`}>
-        {category.icon}
-      </div>
+      <div className={`w-10 h-10 rounded-xl ${category?.color || 'bg-gray-400'} flex items-center justify-center text-white text-lg mr-4 shadow-md shadow-gray-200 dark:shadow-none`}>{category?.icon || '📝'}</div>
       <div className="flex-1 min-w-0">
         <div className="flex justify-between items-center mb-0.5">
           <h4 className="font-bold text-gray-900 dark:text-white text-sm">{transaction.category}</h4>
@@ -228,9 +241,7 @@ function TransactionItem({ transaction, isLast }) {
         </div>
         <div className="flex justify-between items-center text-xs text-gray-400 dark:text-gray-500">
           <span className="truncate pr-2">{transaction.note || '无备注'}</span>
-          <span className={`font-medium ${isCrypto ? 'text-blue-500 dark:text-blue-400' : ''}`}>
-            {transaction.amount} {transaction.currency}
-          </span>
+          <span className={`font-medium ${isCrypto ? 'text-blue-500 dark:text-blue-400' : ''}`}>{transaction.amount} {transaction.currency}</span>
         </div>
       </div>
     </div>
@@ -244,16 +255,9 @@ function AccountItem({ account, hidden, rates, isEditing, onDelete }) {
 
     return (
         <div className="flex items-center p-4 pr-5 hover:bg-gray-50 dark:hover:bg-gray-800/30 transition-colors group cursor-default relative overflow-hidden">
-            
             <div className={`flex items-center transition-all duration-300 overflow-hidden ${isEditing ? 'w-10 mr-2 opacity-100' : 'w-0 mr-0 opacity-0'}`}>
-                <button 
-                    onClick={(e) => { e.stopPropagation(); onDelete(); }}
-                    className="w-8 h-8 rounded-full bg-red-500 flex items-center justify-center text-white shadow-sm active:scale-90 transition-transform"
-                >
-                    <MinusCircle size={18} />
-                </button>
+                <button onClick={(e) => { e.stopPropagation(); onDelete(); }} className="w-8 h-8 rounded-full bg-red-500 flex items-center justify-center text-white shadow-sm active:scale-90 transition-transform"><MinusCircle size={18} /></button>
             </div>
-
             <div className={`w-12 h-12 rounded-2xl bg-gradient-to-br ${account.color} flex items-center justify-center text-white text-xl shadow-lg shadow-gray-200/50 dark:shadow-none mr-4 shrink-0 relative z-10 transition-transform duration-300`}>
                 {account.icon}
                 <div className="absolute inset-0 bg-white/20 rounded-2xl transform -skew-x-12 -translate-x-4"></div>
@@ -261,17 +265,11 @@ function AccountItem({ account, hidden, rates, isEditing, onDelete }) {
             <div className="flex-1 relative z-10">
                 <div className="flex justify-between items-center mb-0.5">
                     <span className="font-bold text-gray-900 dark:text-white text-sm tracking-tight">{account.name}</span>
-                    <span className={`font-bold font-mono tracking-tight ${isLiability && account.balance < 0 ? 'text-red-500' : 'text-gray-900 dark:text-white'}`}>
-                        {hidden ? '****' : `${account.currency} ${account.balance.toLocaleString()}`}
-                    </span>
+                    <span className={`font-bold font-mono tracking-tight ${isLiability && account.balance < 0 ? 'text-red-500' : 'text-gray-900 dark:text-white'}`}>{hidden ? '****' : `${account.currency} ${account.balance.toLocaleString()}`}</span>
                 </div>
                 <div className="flex justify-between items-center text-xs">
-                    <span className="text-gray-400 dark:text-gray-500 font-medium">
-                        {account.type.toUpperCase()}
-                    </span>
-                    <span className="text-gray-400 dark:text-gray-500 font-medium">
-                        {hidden ? '****' : `≈ ¥${Math.abs(cnyVal).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
-                    </span>
+                    <span className="text-gray-400 dark:text-gray-500 font-medium">{account.type.toUpperCase()}</span>
+                    <span className="text-gray-400 dark:text-gray-500 font-medium">{hidden ? '****' : `≈ ¥${Math.abs(cnyVal).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}</span>
                 </div>
             </div>
         </div>
@@ -280,15 +278,11 @@ function AccountItem({ account, hidden, rates, isEditing, onDelete }) {
 
 function SettingItem({ label, value, isLast, toggle, checked, onToggle, icon, onClick }) {
   return (
-    <div 
-        className={`flex items-center justify-between p-5 ${!isLast ? 'border-b border-gray-50 dark:border-gray-800' : ''} active:bg-gray-50 dark:active:bg-gray-800 transition-colors cursor-pointer group`} 
-        onClick={toggle ? onToggle : onClick}
-    >
+    <div className={`flex items-center justify-between p-5 ${!isLast ? 'border-b border-gray-50 dark:border-gray-800' : ''} active:bg-gray-50 dark:active:bg-gray-800 transition-colors cursor-pointer group`} onClick={toggle ? onToggle : onClick}>
       <div className="flex items-center space-x-4">
           {icon && <div className="text-gray-400 group-hover:text-blue-500 transition-colors bg-gray-50 dark:bg-gray-800 p-2 rounded-lg">{icon}</div>}
           <span className="text-sm font-bold text-gray-700 dark:text-gray-200">{label}</span>
       </div>
-      
       {toggle ? (
         <div className={`w-12 h-7 rounded-full relative shadow-inner transition-colors duration-300 ease-in-out ${checked ? 'bg-green-500' : 'bg-gray-200 dark:bg-gray-700'}`}>
           <div className={`absolute top-1 w-5 h-5 bg-white rounded-full shadow-sm transition-transform duration-300 ease-in-out ${checked ? 'translate-x-6 left-0.5' : 'left-1'}`}></div>
@@ -303,7 +297,7 @@ function SettingItem({ label, value, isLast, toggle, checked, onToggle, icon, on
   );
 }
 
-// --- 3. 模态框组件 ---
+// --- 4. 模态框组件 ---
 
 function AddAccountModal({ onClose, onSave, currencies }) {
     const [name, setName] = useState('');
@@ -344,9 +338,7 @@ function AddAccountModal({ onClose, onSave, currencies }) {
                     <input className="w-full text-lg outline-none border-b border-gray-100 dark:border-gray-700 pb-2 bg-transparent dark:text-white font-medium" placeholder="账户名称" value={name} onChange={e => setName(e.target.value)} autoFocus />
                     <div className="flex gap-2 overflow-x-auto pb-2 no-scrollbar">
                          {ACCOUNT_TYPES.map(t => (
-                             <button key={t.id} onClick={() => setType(t)} className={`px-4 py-2 rounded-full text-sm font-medium whitespace-nowrap transition-colors ${type.id === t.id ? 'bg-black dark:bg-white text-white dark:text-black' : 'bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400'}`}>
-                                 <span className="mr-1">{t.icon}</span> {t.name}
-                             </button>
+                             <button key={t.id} onClick={() => setType(t)} className={`px-4 py-2 rounded-full text-sm font-medium whitespace-nowrap transition-colors ${type.id === t.id ? 'bg-black dark:bg-white text-white dark:text-black' : 'bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400'}`}><span className="mr-1">{t.icon}</span> {t.name}</button>
                          ))}
                     </div>
                     <div className="flex items-center gap-3 bg-gray-50 dark:bg-gray-800 rounded-xl p-2">
@@ -416,9 +408,7 @@ function AddTransactionModal({ onClose, onSave, accounts = [], rates = {}, curre
                 <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">未能加载账户或币种信息。请尝试重置数据。</p>
                 <div className="flex gap-3 w-full">
                     <button onClick={onClose} className="flex-1 py-2 rounded-xl bg-gray-100 dark:bg-gray-800 text-xs font-bold text-gray-600 dark:text-gray-300">取消</button>
-                    <button onClick={onReset} className="flex-1 py-2 rounded-xl bg-red-500 text-white text-xs font-bold flex items-center justify-center gap-1">
-                        <RotateCcw size={12} /> 重置数据
-                    </button>
+                    <button onClick={onReset} className="flex-1 py-2 rounded-xl bg-red-500 text-white text-xs font-bold flex items-center justify-center gap-1"><RotateCcw size={12} /> 重置数据</button>
                 </div>
             </div>
         </div>
@@ -432,9 +422,7 @@ function AddTransactionModal({ onClose, onSave, accounts = [], rates = {}, curre
         <div className="bg-white/80 dark:bg-[#2C2C2E]/80 backdrop-blur-xl border-b border-gray-200/50 dark:border-gray-800 p-2 flex justify-center">
             <div className="bg-gray-200/50 dark:bg-black/30 p-1 rounded-xl flex space-x-1">
                 {['expense', 'income', 'transfer'].map(m => (
-                    <button key={m} onClick={() => setMode(m)} className={`px-6 py-1.5 rounded-lg text-xs font-bold transition-all ${mode === m ? 'bg-white dark:bg-gray-700 shadow-sm text-black dark:text-white' : 'text-gray-500 dark:text-gray-400'}`}>
-                        {m === 'expense' ? '支出' : m === 'income' ? '收入' : (isRepayment && mode === 'transfer' ? '还款' : '内部转账')}
-                    </button>
+                    <button key={m} onClick={() => setMode(m)} className={`px-6 py-1.5 rounded-lg text-xs font-bold transition-all ${mode === m ? 'bg-white dark:bg-gray-700 shadow-sm text-black dark:text-white' : 'text-gray-500 dark:text-gray-400'}`}>{m === 'expense' ? '支出' : m === 'income' ? '收入' : (isRepayment && mode === 'transfer' ? '还款' : '内部转账')}</button>
                 ))}
             </div>
         </div>
@@ -475,9 +463,7 @@ function AddTransactionModal({ onClose, onSave, accounts = [], rates = {}, curre
                     <label className="text-xs font-bold text-gray-400 uppercase tracking-wider block mb-3">币种</label>
                     <div className="flex gap-2 overflow-x-auto pb-2 no-scrollbar">
                         {currencies.map(c => (
-                            <button key={c.code} onClick={() => setCurrency(c)} className={`px-4 py-2 rounded-xl text-sm font-bold whitespace-nowrap transition-all ${currency.code === c.code ? 'bg-black dark:bg-white text-white dark:text-black shadow-lg' : 'bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400'}`}>
-                                {c.code}
-                            </button>
+                            <button key={c.code} onClick={() => setCurrency(c)} className={`px-4 py-2 rounded-xl text-sm font-bold whitespace-nowrap transition-all ${currency.code === c.code ? 'bg-black dark:bg-white text-white dark:text-black shadow-lg' : 'bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400'}`}>{c.code}</button>
                         ))}
                     </div>
                </div>
@@ -495,9 +481,7 @@ function AddTransactionModal({ onClose, onSave, accounts = [], rates = {}, curre
               <div className="bg-white dark:bg-[#2C2C2E] rounded-3xl p-6 shadow-sm border border-gray-100/50 dark:border-gray-700 grid grid-cols-4 gap-y-6 gap-x-2">
                   {(mode === 'income' ? INCOME_CATEGORIES : EXPENSE_CATEGORIES).map(c => (
                       <button key={c.id} onClick={() => setCategory(c)} className="flex flex-col items-center space-y-2 group">
-                          <div className={`w-14 h-14 rounded-2xl flex items-center justify-center text-2xl transition-all duration-200 ${category.id === c.id ? `${c.color} text-white scale-110 shadow-lg` : 'bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400'}`}>
-                              {c.icon}
-                          </div>
+                          <div className={`w-14 h-14 rounded-2xl flex items-center justify-center text-2xl transition-all duration-200 ${category.id === c.id ? `${c.color} text-white scale-110 shadow-lg` : 'bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400'}`}>{c.icon}</div>
                           <span className={`text-[10px] font-bold ${category.id === c.id ? 'text-gray-900 dark:text-white' : 'text-gray-400 dark:text-gray-500'}`}>{c.name}</span>
                       </button>
                   ))}
@@ -510,7 +494,7 @@ function AddTransactionModal({ onClose, onSave, accounts = [], rates = {}, curre
   );
 }
 
-// --- 4. 视图组件 ---
+// --- 5. 视图组件 ---
 
 function HomeView({ transactions, totalExpense, userAvatar, userNickname }) {
   const [aiInsight, setAiInsight] = useState(null);
@@ -547,20 +531,15 @@ function HomeView({ transactions, totalExpense, userAvatar, userNickname }) {
             ¥{totalExpense.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
           </h1>
         </div>
-        
         <div className="flex flex-col items-center gap-2">
              <div className="w-14 h-14 rounded-2xl overflow-hidden border-2 border-white dark:border-[#2C2C2E] shadow-xl shadow-blue-500/10 transition-transform hover:scale-105 active:scale-95 bg-gray-100 dark:bg-gray-800">
                 <img src={typeof userAvatar === 'string' ? userAvatar : DEFAULT_BTC_AVATAR} alt="User" className="w-full h-full object-cover" />
              </div>
-             <button 
-                onClick={handleGenerateInsight}
-                className="w-8 h-8 bg-gradient-to-tr from-indigo-500 to-purple-500 rounded-full flex items-center justify-center text-white shadow-lg shadow-purple-500/30 active:scale-90 transition-all"
-             >
+             <button onClick={handleGenerateInsight} className="w-8 h-8 bg-gradient-to-tr from-indigo-500 to-purple-500 rounded-full flex items-center justify-center text-white shadow-lg shadow-purple-500/30 active:scale-90 transition-all">
                 {loadingInsight ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
              </button>
         </div>
       </div>
-
       {aiInsight && (
         <div className="mb-8 bg-white/60 dark:bg-[#1C1C1E]/60 backdrop-blur-md rounded-3xl p-6 shadow-xl shadow-indigo-500/5 border border-white/40 dark:border-white/5 relative overflow-hidden group">
           <div className="relative z-10">
@@ -571,40 +550,25 @@ function HomeView({ transactions, totalExpense, userAvatar, userNickname }) {
             <p className="text-sm font-medium leading-relaxed text-gray-800 dark:text-gray-200">{aiInsight}</p>
           </div>
           <button onClick={() => setAiInsight(null)} className="absolute top-4 right-4 opacity-30 hover:opacity-100 transition-opacity"><X size={16}/></button>
-          <div className="absolute -right-10 -bottom-10 w-32 h-32 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-full blur-3xl opacity-10 group-hover:opacity-20 transition-opacity duration-700"></div>
         </div>
       )}
-
       <div className="relative mb-8 group">
         <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
           <Search className="h-4 w-4 text-gray-400 group-focus-within:text-blue-500 transition-colors" />
         </div>
-        <input 
-          type="text" 
-          placeholder="搜索账单..." 
-          className="w-full bg-white dark:bg-[#1C1C1E] rounded-2xl py-3.5 pl-11 pr-4 text-sm font-medium shadow-sm shadow-gray-200/50 dark:shadow-none border border-transparent focus:border-blue-500/20 focus:ring-4 focus:ring-blue-500/10 focus:outline-none transition-all duration-300 dark:text-white placeholder-gray-400"
-        />
+        <input type="text" placeholder="搜索账单..." className="w-full bg-white dark:bg-[#1C1C1E] rounded-2xl py-3.5 pl-11 pr-4 text-sm font-medium shadow-sm shadow-gray-200/50 dark:shadow-none border border-transparent focus:border-blue-500/20 focus:ring-4 focus:ring-blue-500/10 focus:outline-none transition-all duration-300 dark:text-white placeholder-gray-400" />
       </div>
-
       <div className="space-y-6 pb-8">
         {Object.entries(groupedTransactions).map(([date, list]) => (
           <div key={date} className="animate-in slide-in-from-bottom-4 duration-700 fill-mode-backwards">
-            <h3 className="text-xs font-bold text-gray-400 dark:text-gray-600 mb-3 pl-2 uppercase tracking-wider flex items-center gap-2">
-                <div className="w-1 h-1 rounded-full bg-gray-300 dark:bg-gray-700"></div>
-                {date}
-            </h3>
+            <h3 className="text-xs font-bold text-gray-400 dark:text-gray-600 mb-3 pl-2 uppercase tracking-wider flex items-center gap-2"><div className="w-1 h-1 rounded-full bg-gray-300 dark:bg-gray-700"></div>{date}</h3>
             <div className="bg-white dark:bg-[#1C1C1E] rounded-3xl overflow-hidden shadow-sm shadow-gray-200/50 dark:shadow-none border border-gray-100/50 dark:border-gray-800/50">
-              {list.map((t, index) => (
-                <TransactionItem key={t.id} transaction={t} isLast={index === list.length - 1} />
-              ))}
+              {list.map((t, index) => <TransactionItem key={t.id} transaction={t} isLast={index === list.length - 1} />)}
             </div>
           </div>
         ))}
         {transactions.length === 0 && (
-          <div className="flex flex-col items-center justify-center py-24 text-gray-300 dark:text-gray-700">
-            <Wallet size={64} strokeWidth={1} className="mb-4 opacity-50" />
-            <p className="font-medium">暂无记录</p>
-          </div>
+          <div className="flex flex-col items-center justify-center py-24 text-gray-300 dark:text-gray-700"><Wallet size={64} strokeWidth={1} className="mb-4 opacity-50" /><p className="font-medium">暂无记录</p></div>
         )}
       </div>
     </div>
@@ -624,9 +588,7 @@ function AssetsView({ accounts, onAddAccount, onDeleteAccount, rates, currencies
     }, 0);
   }, [accounts, rates]);
 
-  const updatedTimeStr = lastUpdated 
-    ? new Date(lastUpdated).toLocaleTimeString('zh-CN', {hour: '2-digit', minute: '2-digit'}) 
-    : '--:--';
+  const updatedTimeStr = lastUpdated ? new Date(lastUpdated).toLocaleTimeString('zh-CN', {hour: '2-digit', minute: '2-digit'}) : '--:--';
 
   return (
     <div className="px-5 pt-4 animate-in fade-in duration-500">
@@ -634,17 +596,11 @@ function AssetsView({ accounts, onAddAccount, onDeleteAccount, rates, currencies
         <div className="flex justify-between items-start mb-2">
           <h2 className="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-widest flex items-center gap-2">
             净资产估值
-            <button onClick={() => setIsPrivacyMode(!isPrivacyMode)} className="p-1 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-md transition-colors">
-                {isPrivacyMode ? <EyeOff size={14} /> : <Eye size={14} />}
-            </button>
+            <button onClick={() => setIsPrivacyMode(!isPrivacyMode)} className="p-1 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-md transition-colors"><EyeOff size={14} /></button>
           </h2>
           <div className="flex gap-2">
-              <button onClick={() => setIsEditing(!isEditing)} className={`text-xs font-bold px-3 py-1.5 rounded-full transition-colors ${isEditing ? 'bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-white' : 'text-blue-600 dark:text-blue-400 bg-transparent hover:bg-blue-50 dark:hover:bg-blue-900/20'}`}>
-                  {isEditing ? '完成' : '编辑'}
-              </button>
-              <button onClick={() => setShowAddAccount(true)} className="text-white font-bold text-xs bg-black dark:bg-white dark:text-black px-4 py-1.5 rounded-full hover:scale-105 active:scale-95 transition-transform">
-                  + 账户
-              </button>
+              <button onClick={() => setIsEditing(!isEditing)} className={`text-xs font-bold px-3 py-1.5 rounded-full transition-colors ${isEditing ? 'bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-white' : 'text-blue-600 dark:text-blue-400 bg-transparent hover:bg-blue-50 dark:hover:bg-blue-900/20'}`}>{isEditing ? '完成' : '编辑'}</button>
+              <button onClick={() => setShowAddAccount(true)} className="text-white font-bold text-xs bg-black dark:bg-white dark:text-black px-4 py-1.5 rounded-full hover:scale-105 active:scale-95 transition-transform">+ 账户</button>
           </div>
         </div>
         <div className="flex flex-col relative">
@@ -652,9 +608,7 @@ function AssetsView({ accounts, onAddAccount, onDeleteAccount, rates, currencies
                 {isPrivacyMode ? '****' : `¥${totalAssetsCNY.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
             </h1>
             <div className="flex items-center gap-2">
-               <p className="text-[10px] text-gray-400 dark:text-gray-600 flex items-center opacity-80">
-                  <RefreshCw size={10} className="mr-1" /> 汇率: {source} (更新于 {updatedTimeStr})
-               </p>
+               <p className="text-[10px] text-gray-400 dark:text-gray-600 flex items-center opacity-80"><RefreshCw size={10} className="mr-1" /> 汇率: {source} (更新于 {updatedTimeStr})</p>
             </div>
         </div>
       </div>
@@ -671,14 +625,9 @@ function AssetsView({ accounts, onAddAccount, onDeleteAccount, rates, currencies
             if (typeGroup === 'credit') title = "信用负债";
             return (
                 <div key={typeGroup}>
-                    <h3 className={`text-xs font-bold mb-3 pl-2 uppercase tracking-wider flex items-center gap-2 ${typeGroup === 'credit' ? 'text-red-500' : 'text-gray-400 dark:text-gray-600'}`}>
-                        {typeGroup === 'credit' && <Activity size={12} />}
-                        {title}
-                    </h3>
+                    <h3 className={`text-xs font-bold mb-3 pl-2 uppercase tracking-wider flex items-center gap-2 ${typeGroup === 'credit' ? 'text-red-500' : 'text-gray-400 dark:text-gray-600'}`}>{typeGroup === 'credit' && <Activity size={12} />}{title}</h3>
                     <div className="bg-white dark:bg-[#1C1C1E] rounded-3xl overflow-hidden shadow-sm shadow-gray-200/50 dark:shadow-none border border-gray-100/50 dark:border-gray-800/50 divide-y divide-gray-50 dark:divide-gray-800/50">
-                        {groupAccounts.map(acc => (
-                            <AccountItem key={acc.id} account={acc} hidden={isPrivacyMode} rates={rates} isEditing={isEditing} onDelete={() => onDeleteAccount(acc.id)} />
-                        ))}
+                        {groupAccounts.map(acc => <AccountItem key={acc.id} account={acc} hidden={isPrivacyMode} rates={rates} isEditing={isEditing} onDelete={() => onDeleteAccount(acc.id)} />)}
                     </div>
                 </div>
             )
@@ -806,7 +755,6 @@ function StatsView({ transactions, accounts, rates }) {
 }
 
 function SettingsView({ userAvatar, setUserAvatar, userNickname, setUserNickname, theme, setTheme, currencies, onAddCurrency, settings, setSettings, accounts, onReorderAccounts, onReset }) {
-    const [toggles, setToggles] = useState({ icloud: true, faceid: false, notify: true });
     const [showAvatarSelector, setShowAvatarSelector] = useState(false);
     const [isAddingCurrency, setIsAddingCurrency] = useState(false);
     const [newCurrencyCode, setNewCurrencyCode] = useState('');
@@ -814,20 +762,12 @@ function SettingsView({ userAvatar, setUserAvatar, userNickname, setUserNickname
     const [tempName, setTempName] = useState(userNickname);
     const fileInputRef = useRef(null);
 
-    const toggle = (key) => setToggles(p => ({ ...p, [key]: !p[key] }));
-
     const handleAddCurr = () => {
         if(newCurrencyCode) {
             onAddCurrency({ code: newCurrencyCode.toUpperCase(), symbol: newCurrencyCode.toUpperCase(), name: newCurrencyCode.toUpperCase(), type: 'crypto', coinGeckoId: newCurrencyCode.toLowerCase(), fallbackRate: 1 });
             setIsAddingCurrency(false);
             setNewCurrencyCode('');
         }
-    };
-
-    const changeRateSource = () => {
-        const RATE_SOURCES = ['ExchangeAPI + Binance', 'CoinGecko', 'Manual'];
-        const nextIndex = (RATE_SOURCES.indexOf(settings.rateSource) + 1) % RATE_SOURCES.length;
-        setSettings({ ...settings, rateSource: RATE_SOURCES[nextIndex] });
     };
 
     const handleAvatarUpload = (e) => {
@@ -849,7 +789,6 @@ function SettingsView({ userAvatar, setUserAvatar, userNickname, setUserNickname
   return (
     <div className="px-5 pt-6 animate-in fade-in duration-500">
       <h1 className="text-3xl font-black mb-8 tracking-tight text-gray-900 dark:text-white">偏好设置</h1>
-      
       <div className="bg-white dark:bg-[#1C1C1E] rounded-3xl p-5 flex items-center mb-8 shadow-sm border border-gray-100 dark:border-gray-800 relative overflow-hidden">
          <div className="absolute right-0 top-0 w-24 h-24 bg-blue-500/5 rounded-full blur-2xl -mr-6 -mt-6"></div>
          <div className="w-16 h-16 rounded-2xl bg-gray-100 dark:bg-gray-800 overflow-hidden mr-4 border-2 border-white dark:border-gray-700 shadow-lg relative z-10 cursor-pointer group" onClick={() => setShowAvatarSelector(!showAvatarSelector)}>
@@ -927,7 +866,11 @@ function SettingsView({ userAvatar, setUserAvatar, userNickname, setUserNickname
             </div>
         )}
         <SettingItem label="默认法币" value="CNY" icon={<DollarSign size={18} />} />
-        <SettingItem label="汇率源" value={settings.rateSource} icon={<ArrowRightLeft size={18} />} isLast onClick={changeRateSource} />
+        <SettingItem label="汇率源" value={settings.rateSource} icon={<ArrowRightLeft size={18} />} isLast onClick={() => {
+            const RATE_SOURCES = ['ExchangeAPI + Binance', 'CoinGecko', 'Manual'];
+            const nextIndex = (RATE_SOURCES.indexOf(settings.rateSource) + 1) % RATE_SOURCES.length;
+            setSettings({ ...settings, rateSource: RATE_SOURCES[nextIndex] });
+        }} />
         <div onClick={onReset} className="flex items-center justify-between p-5 border-t border-gray-50 dark:border-gray-800 active:bg-red-50 dark:active:bg-red-900/20 transition-colors cursor-pointer group">
             <div className="flex items-center space-x-4"><div className="bg-red-50 dark:bg-red-900/20 text-red-500 p-2 rounded-lg"><Trash2 size={18} /></div><span className="text-sm font-bold text-red-600 dark:text-red-400">重置所有数据</span></div>
             <ChevronRight size={16} className="text-red-300" />
@@ -937,7 +880,9 @@ function SettingsView({ userAvatar, setUserAvatar, userNickname, setUserNickname
   );
 }
 
-// --- 5. Main App Component (Must be last) ---
+// ==========================================
+// 6. Main App Component (Must be last)
+// ==========================================
 
 export default function App() {
   const [transactions, setTransactions] = usePersistedState('data_transactions', []);
@@ -945,10 +890,7 @@ export default function App() {
   const [currencies, setCurrencies] = usePersistedState('data_currencies', DEFAULT_CURRENCIES);
   const [userAvatar, setUserAvatar] = usePersistedState('user_avatar', DEFAULT_BTC_AVATAR);
   const [userNickname, setUserNickname] = usePersistedState('user_nickname', getRandomTycoonName());
-  const [settings, setSettings] = usePersistedState('app_settings', { 
-      defaultAccountId: 'acc_alipay', 
-      rateSource: 'ExchangeAPI + Binance' 
-  });
+  const [settings, setSettings] = usePersistedState('app_settings', { defaultAccountId: 'acc_alipay', rateSource: 'ExchangeAPI + Binance' });
   
   const [activeTab, setActiveTab] = useState('home'); 
   const [showAddModal, setShowAddModal] = useState(false);
@@ -959,13 +901,11 @@ export default function App() {
   const [showFeedback, setShowFeedback] = useState(false);
   const [feedbackText, setFeedbackText] = useState('');
 
-  // Data Integrity Check
   useEffect(() => {
       if (!accounts || !Array.isArray(accounts) || accounts.length === 0) setAccounts(INITIAL_ACCOUNTS_DATA);
       if (!currencies || !Array.isArray(currencies) || currencies.length === 0) setCurrencies(DEFAULT_CURRENCIES);
   }, []);
 
-  // Exchange Rates Logic
   useEffect(() => {
     const checkAndUpdateRates = async () => {
         const now = Date.now();
@@ -1078,6 +1018,8 @@ export default function App() {
           setTransactions([]);
           setAccounts(INITIAL_ACCOUNTS_DATA);
           setCurrencies(DEFAULT_CURRENCIES);
+          setRates({});
+          setRatesLastUpdated(null);
           window.localStorage.clear();
           window.location.reload();
       }
