@@ -9,10 +9,21 @@ import { getFirestore, doc, setDoc, onSnapshot, collection } from 'firebase/fire
 // ==========================================
 // 1. Firebase 配置与初始化
 // ==========================================
+// 尝试从环境读取，若无则使用空对象（将降级为本地存储）
 const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
-const db = getFirestore(app);
+let app, auth, db;
+
+try {
+  if (Object.keys(firebaseConfig).length > 0) {
+      app = initializeApp(firebaseConfig);
+      auth = getAuth(app);
+      db = getFirestore(app);
+  } else {
+      console.warn("Firebase config not found, running in local-only mode.");
+  }
+} catch (e) {
+  console.warn("Firebase init error:", e);
+}
 const appId = typeof __app_id !== 'undefined' ? __app_id : 'finance-app-v3';
 
 // ==========================================
@@ -25,7 +36,7 @@ const FEEDBACK_QUOTES = [
   "会花钱的人，更会赚钱。", "记账是为了更好地掌控人生。", "积少成多，聚沙成塔。",
   "今天的克制，是为了明天的自由。", "在这个浮躁的世界，保持清醒的财务头脑。", "你不理财，财不理你。",
   "省下的每一分钱，都是未来的底气。", "简单的生活，丰盈的内心。", "消费看需求，而非欲望。",
-  "坚持记账，你已经超过了90%的人。"
+  "坚持记账，你已经超过了90%的人."
 ];
 
 const TYCOON_NAMES = [
@@ -78,6 +89,7 @@ const ACCOUNT_TYPES = [
   { id: 'cash', name: '现金', icon: '💵', type: 'asset' },
 ];
 
+// 默认账户：余额重置为 0
 const INITIAL_ACCOUNTS_DATA = [
   { id: 'acc_alipay', name: '支付宝', type: 'wallet', balance: 0.00, currency: 'CNY', icon: '🔵', color: 'from-blue-500 to-blue-600' },
   { id: 'acc_wechat', name: '微信钱包', type: 'wallet', balance: 0.00, currency: 'CNY', icon: '🟢', color: 'from-green-500 to-emerald-600' },
@@ -132,14 +144,14 @@ function usePersistedState(key, defaultValue) {
       const item = window.localStorage.getItem(key);
       if (item) {
         const parsed = JSON.parse(item);
-        // 严格的数据类型检查，防止旧数据导致崩溃
+        // 严格的数据类型检查，防止崩溃
         if (key.includes('transactions') && !Array.isArray(parsed)) return defaultValue;
-        if (key.includes('accounts') && (!Array.isArray(parsed))) return defaultValue;
-        if (key.includes('currencies') && (!Array.isArray(parsed))) return defaultValue;
+        if (key.includes('accounts') && (!Array.isArray(parsed) || parsed.length === 0)) return defaultValue;
+        if (key.includes('currencies') && (!Array.isArray(parsed) || parsed.length === 0)) return defaultValue;
         if (key.includes('user_avatar') && typeof parsed !== 'string') return defaultValue;
         if (key.includes('user_nickname') && typeof parsed !== 'string') return defaultValue;
-        // 防止对象被渲染为 React Child 的兜底
-        if (typeof defaultValue !== 'object' && typeof parsed === 'object') return defaultValue; 
+        // 兜底：如果不应该是个对象但却是个对象
+        if (typeof defaultValue !== 'object' && typeof parsed === 'object') return defaultValue;
         return parsed;
       }
       return defaultValue;
@@ -150,12 +162,13 @@ function usePersistedState(key, defaultValue) {
 
   // 1. 初始化 Firebase Auth
   useEffect(() => {
+    if (!auth) return;
     const initAuth = async () => {
-       if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-          await signInWithCustomToken(auth, __initial_auth_token);
-       } else {
-          await signInAnonymously(auth);
-       }
+        try {
+           await signInAnonymously(auth);
+        } catch(e) {
+            console.warn("Firebase Auth failed (config missing?)", e);
+        }
     };
     initAuth();
     return onAuthStateChanged(auth, setUser);
@@ -163,12 +176,11 @@ function usePersistedState(key, defaultValue) {
 
   // 2. 监听云端数据 (拉取)
   useEffect(() => {
-    if (!user) return;
+    if (!user || !db) return;
     const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'data', key);
     const unsubscribe = onSnapshot(docRef, (docSnap) => {
         if (docSnap.exists()) {
             const cloudData = docSnap.data().val;
-            // 简单 JSON 比较避免循环
             if (JSON.stringify(cloudData) !== JSON.stringify(state)) {
                 setState(cloudData);
                 try {
@@ -176,7 +188,7 @@ function usePersistedState(key, defaultValue) {
                 } catch (e) {}
             }
         }
-    }, (error) => console.error("Sync fetch error:", error));
+    }, (error) => console.warn("Sync fetch error (likely permission or config):", error.code));
     return () => unsubscribe();
   }, [user, key]); 
 
@@ -188,9 +200,9 @@ function usePersistedState(key, defaultValue) {
       window.localStorage.setItem(key, JSON.stringify(valueToStore));
     } catch (e) { console.error(e); }
 
-    if (user) {
+    if (user && db) {
         const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'data', key);
-        setDoc(docRef, { val: valueToStore }, { merge: true }).catch(e => console.error("Cloud save failed:", e));
+        setDoc(docRef, { val: valueToStore }, { merge: true }).catch(e => console.warn("Cloud save failed:", e.code));
     }
   }, [key, state, user]);
 
@@ -389,18 +401,52 @@ function AddAccountModal({ onClose, onSave, currencies }) {
                     <h3 className="font-bold text-lg dark:text-white">添加账户</h3>
                     <button onClick={handleSave} className="text-blue-600 dark:text-blue-400 font-bold disabled:opacity-30" disabled={!name}>完成</button>
                 </div>
+                
                 <div className="bg-white dark:bg-[#2C2C2E] rounded-2xl p-4 shadow-sm space-y-4">
-                    <input className="w-full text-lg outline-none border-b border-gray-100 dark:border-gray-700 pb-2 bg-transparent dark:text-white font-medium" placeholder="账户名称" value={name} onChange={e => setName(e.target.value)} autoFocus />
+                    {/* Name */}
+                    <input 
+                        className="w-full text-lg outline-none border-b border-gray-100 dark:border-gray-700 pb-2 bg-transparent dark:text-white font-medium placeholder-gray-400" 
+                        placeholder="账户名称 (例如: 工商银行)" 
+                        value={name} 
+                        onChange={e => setName(e.target.value)} 
+                        autoFocus 
+                    />
+                    
+                    {/* Types */}
                     <div className="flex gap-2 overflow-x-auto pb-2 no-scrollbar">
                          {ACCOUNT_TYPES.map(t => (
-                             <button key={t.id} onClick={() => setType(t)} className={`px-4 py-2 rounded-full text-sm font-medium whitespace-nowrap transition-colors ${type.id === t.id ? 'bg-black dark:bg-white text-white dark:text-black' : 'bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400'}`}><span className="mr-1">{t.icon}</span> {t.name}</button>
+                             <button key={t.id} onClick={() => setType(t)} className={`px-4 py-2 rounded-full text-sm font-medium whitespace-nowrap transition-colors ${type.id === t.id ? 'bg-black dark:bg-white text-white dark:text-black' : 'bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400'}`}>
+                                 <span className="mr-1">{t.icon}</span> {t.name}
+                             </button>
                          ))}
                     </div>
-                    <div className="flex items-center gap-3 bg-gray-50 dark:bg-gray-800 rounded-xl p-2">
-                        <select value={currency.code} onChange={e => setCurrency(currencies.find(c => c.code === e.target.value))} className="bg-transparent dark:text-white rounded-lg p-2 text-sm outline-none font-bold">
-                            {currencies.map(c => <option key={c.code} value={c.code} className="dark:text-black">{c.code}</option>)}
-                        </select>
-                        <input type="number" className="flex-1 text-right text-2xl font-bold font-mono outline-none bg-transparent placeholder:text-gray-300 dark:text-white" placeholder="0.00" value={balance} onChange={e => setBalance(e.target.value)} />
+
+                    {/* Balance & Currency (Optimized Layout) */}
+                    <div className="bg-gray-50 dark:bg-gray-800 rounded-xl p-3">
+                        <div className="flex justify-between items-center mb-1">
+                            <span className="text-xs font-bold text-gray-400 uppercase">初始余额</span>
+                            <div className="relative">
+                                <select 
+                                    value={currency.code} 
+                                    onChange={e => setCurrency(currencies.find(c => c.code === e.target.value))} 
+                                    className="appearance-none bg-transparent text-xs font-bold text-blue-600 dark:text-blue-400 outline-none pr-4 text-right"
+                                >
+                                    {currencies.map(c => <option key={c.code} value={c.code} className="dark:text-black">{c.code}</option>)}
+                                </select>
+                                <ChevronRight size={12} className="absolute right-0 top-1/2 -translate-y-1/2 text-blue-600 dark:text-blue-400 pointer-events-none" />
+                            </div>
+                        </div>
+                        <div className="flex items-baseline gap-2">
+                            <span className="text-2xl font-bold text-gray-400">{currency.symbol}</span>
+                            <input 
+                                type="number" 
+                                className="flex-1 text-3xl font-bold outline-none bg-transparent placeholder:text-gray-300 dark:text-white" 
+                                placeholder="0.00" 
+                                value={balance} 
+                                onChange={e => setBalance(e.target.value)} 
+                            />
+                        </div>
+                        {isCredit && <p className="text-[10px] text-gray-400 mt-1 text-right">正数将自动记录为负债</p>}
                     </div>
                 </div>
             </div>
@@ -967,7 +1013,6 @@ export default function App() {
   const [feedbackText, setFeedbackText] = useState('');
   const [isSyncing, setIsSyncing] = useState(false);
 
-  // Data Integrity Check
   useEffect(() => {
       if (!accounts || !Array.isArray(accounts) || accounts.length === 0) setAccounts(INITIAL_ACCOUNTS_DATA);
       if (!currencies || !Array.isArray(currencies) || currencies.length === 0) setCurrencies(DEFAULT_CURRENCIES);
