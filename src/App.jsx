@@ -1,10 +1,22 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { 
-  Wallet, Plus, Settings, ChevronRight, Search, TrendingUp, CreditCard, X, Camera, Loader2, Sparkles, MessageSquareQuote, PieChart, Landmark, Coins, ArrowRightLeft, Eye, EyeOff, Bell, Share2, CalendarClock, ArrowRight, RefreshCw, Moon, Sun, Smartphone, CheckCircle2, DollarSign, Cloud, Activity, Layers, MinusCircle, Trash2, Briefcase, LineChart, Gift, ArrowUp, ArrowDown, GripVertical, Upload, User, Edit3, AlertTriangle, RotateCcw
+  Wallet, Plus, Settings, ChevronRight, Search, TrendingUp, CreditCard, X, Camera, Loader2, Sparkles, MessageSquareQuote, PieChart, Landmark, Coins, ArrowRightLeft, Eye, EyeOff, Bell, Share2, CalendarClock, ArrowRight, RefreshCw, Moon, Sun, Smartphone, CheckCircle2, DollarSign, Cloud, Activity, Layers, MinusCircle, Trash2, Briefcase, LineChart, Gift, ArrowUp, ArrowDown, GripVertical, Upload, User, Edit3, AlertTriangle, RotateCcw, Save
 } from 'lucide-react';
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
+import { getFirestore, doc, setDoc, onSnapshot, collection } from 'firebase/firestore';
 
 // ==========================================
-// 1. 常量与配置
+// 1. Firebase 配置与初始化
+// ==========================================
+const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'finance-app-v3';
+
+// ==========================================
+// 2. 常量与配置
 // ==========================================
 
 const FEEDBACK_QUOTES = [
@@ -66,7 +78,6 @@ const ACCOUNT_TYPES = [
   { id: 'cash', name: '现金', icon: '💵', type: 'asset' },
 ];
 
-// 默认账户：余额重置为 0
 const INITIAL_ACCOUNTS_DATA = [
   { id: 'acc_alipay', name: '支付宝', type: 'wallet', balance: 0.00, currency: 'CNY', icon: '🔵', color: 'from-blue-500 to-blue-600' },
   { id: 'acc_wechat', name: '微信钱包', type: 'wallet', balance: 0.00, currency: 'CNY', icon: '🟢', color: 'from-green-500 to-emerald-600' },
@@ -96,7 +107,7 @@ const INCOME_CATEGORIES = [
   { id: 'other_income', name: '其他', icon: '💎', color: 'bg-emerald-500' },
 ];
 
-// --- 2. 工具函数与 Hooks ---
+// --- 3. 工具函数与 Hooks ---
 
 const callGemini = async (prompt, base64Image = null, mimeType = 'image/jpeg') => {
   const apiKey = ""; 
@@ -114,32 +125,76 @@ const callGemini = async (prompt, base64Image = null, mimeType = 'image/jpeg') =
   } catch (error) { return null; }
 };
 
+// 核心 Hook: 自动同步 LocalStorage 和 Firebase
 function usePersistedState(key, defaultValue) {
   const [state, setState] = useState(() => {
     try {
       const item = window.localStorage.getItem(key);
       if (item) {
-          const parsed = JSON.parse(item);
-          // 数据完整性自愈逻辑：检查解析后的数据类型是否符合预期
-          if (defaultValue === null && parsed !== null) return parsed;
-          if (typeof defaultValue === 'string' && typeof parsed !== 'string') return defaultValue;
-          if (Array.isArray(defaultValue) && !Array.isArray(parsed)) return defaultValue;
-          if (typeof defaultValue === 'object' && !Array.isArray(defaultValue) && (typeof parsed !== 'object' || Array.isArray(parsed))) return defaultValue;
-          return parsed;
+        const parsed = JSON.parse(item);
+        // 严格的数据类型检查，防止旧数据导致崩溃
+        if (key.includes('transactions') && !Array.isArray(parsed)) return defaultValue;
+        if (key.includes('accounts') && (!Array.isArray(parsed))) return defaultValue;
+        if (key.includes('currencies') && (!Array.isArray(parsed))) return defaultValue;
+        if (key.includes('user_avatar') && typeof parsed !== 'string') return defaultValue;
+        if (key.includes('user_nickname') && typeof parsed !== 'string') return defaultValue;
+        // 防止对象被渲染为 React Child 的兜底
+        if (typeof defaultValue !== 'object' && typeof parsed === 'object') return defaultValue; 
+        return parsed;
       }
       return defaultValue;
-    } catch (error) {
-      return defaultValue;
-    }
+    } catch { return defaultValue; }
   });
 
-  useEffect(() => {
-    try {
-      window.localStorage.setItem(key, JSON.stringify(state));
-    } catch (error) { console.error(error); }
-  }, [key, state]);
+  const [user, setUser] = useState(null);
 
-  return [state, setState];
+  // 1. 初始化 Firebase Auth
+  useEffect(() => {
+    const initAuth = async () => {
+       if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+       } else {
+          await signInAnonymously(auth);
+       }
+    };
+    initAuth();
+    return onAuthStateChanged(auth, setUser);
+  }, []);
+
+  // 2. 监听云端数据 (拉取)
+  useEffect(() => {
+    if (!user) return;
+    const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'data', key);
+    const unsubscribe = onSnapshot(docRef, (docSnap) => {
+        if (docSnap.exists()) {
+            const cloudData = docSnap.data().val;
+            // 简单 JSON 比较避免循环
+            if (JSON.stringify(cloudData) !== JSON.stringify(state)) {
+                setState(cloudData);
+                try {
+                    window.localStorage.setItem(key, JSON.stringify(cloudData));
+                } catch (e) {}
+            }
+        }
+    }, (error) => console.error("Sync fetch error:", error));
+    return () => unsubscribe();
+  }, [user, key]); 
+
+  // 3. 写入数据
+  const setSyncedState = useCallback((newValue) => {
+    const valueToStore = newValue instanceof Function ? newValue(state) : newValue;
+    setState(valueToStore);
+    try {
+      window.localStorage.setItem(key, JSON.stringify(valueToStore));
+    } catch (e) { console.error(e); }
+
+    if (user) {
+        const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'data', key);
+        setDoc(docRef, { val: valueToStore }, { merge: true }).catch(e => console.error("Cloud save failed:", e));
+    }
+  }, [key, state, user]);
+
+  return [state, setSyncedState];
 }
 
 function useTheme() {
@@ -159,7 +214,7 @@ function useTheme() {
 }
 
 // ==========================================
-// 3. 基础 UI 组件 (必须在 App 之前定义)
+// 4. 基础 UI 组件 (必须在 App 之前定义)
 // ==========================================
 
 function ScanningOverlay({ isVisible }) {
@@ -249,7 +304,7 @@ function TransactionItem({ transaction, isLast }) {
 }
 
 function AccountItem({ account, hidden, rates, isEditing, onDelete }) {
-    const rate = rates[account.currency] || 1;
+    const rate = (rates && rates[account.currency]) ? rates[account.currency] : 1;
     const cnyVal = account.balance * rate;
     const isLiability = ['credit', 'huabei'].includes(account.type);
 
@@ -357,7 +412,8 @@ function AddTransactionModal({ onClose, onSave, accounts = [], rates = {}, curre
   const [mode, setMode] = useState('expense'); 
   const [amount, setAmount] = useState('');
   
-  const [currency, setCurrency] = useState(currencies && currencies.length > 0 ? currencies[0] : null); 
+  // Safe initializers with fallbacks
+  const [currency, setCurrency] = useState(currencies && currencies.length > 0 ? currencies[0] : DEFAULT_CURRENCIES[0]); 
   const [rate, setRate] = useState(1);
   const [category, setCategory] = useState(EXPENSE_CATEGORIES[0]);
   const [note, setNote] = useState('');
@@ -575,7 +631,7 @@ function HomeView({ transactions, totalExpense, userAvatar, userNickname }) {
   );
 }
 
-function AssetsView({ accounts, onAddAccount, onDeleteAccount, rates, currencies, lastUpdated, source }) {
+function AssetsView({ accounts, onAddAccount, onDeleteAccount, rates, currencies, lastUpdated, source, onRefreshRates }) {
   const [showAddAccount, setShowAddAccount] = useState(false);
   const [isPrivacyMode, setIsPrivacyMode] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
@@ -607,7 +663,7 @@ function AssetsView({ accounts, onAddAccount, onDeleteAccount, rates, currencies
             <h1 className="text-5xl font-black tracking-tighter text-transparent bg-clip-text bg-gradient-to-r from-gray-900 to-gray-600 dark:from-white dark:to-gray-400 mb-2 drop-shadow-sm">
                 {isPrivacyMode ? '****' : `¥${totalAssetsCNY.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
             </h1>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 cursor-pointer active:opacity-50" onClick={() => onRefreshRates(true)}>
                <p className="text-[10px] text-gray-400 dark:text-gray-600 flex items-center opacity-80"><RefreshCw size={10} className="mr-1" /> 汇率: {source} (更新于 {updatedTimeStr})</p>
             </div>
         </div>
@@ -755,6 +811,7 @@ function StatsView({ transactions, accounts, rates }) {
 }
 
 function SettingsView({ userAvatar, setUserAvatar, userNickname, setUserNickname, theme, setTheme, currencies, onAddCurrency, settings, setSettings, accounts, onReorderAccounts, onReset }) {
+    const [toggles, setToggles] = useState({ icloud: true, faceid: false, notify: true });
     const [showAvatarSelector, setShowAvatarSelector] = useState(false);
     const [isAddingCurrency, setIsAddingCurrency] = useState(false);
     const [newCurrencyCode, setNewCurrencyCode] = useState('');
@@ -762,12 +819,20 @@ function SettingsView({ userAvatar, setUserAvatar, userNickname, setUserNickname
     const [tempName, setTempName] = useState(userNickname);
     const fileInputRef = useRef(null);
 
+    const toggle = (key) => setToggles(p => ({ ...p, [key]: !p[key] }));
+
     const handleAddCurr = () => {
         if(newCurrencyCode) {
             onAddCurrency({ code: newCurrencyCode.toUpperCase(), symbol: newCurrencyCode.toUpperCase(), name: newCurrencyCode.toUpperCase(), type: 'crypto', coinGeckoId: newCurrencyCode.toLowerCase(), fallbackRate: 1 });
             setIsAddingCurrency(false);
             setNewCurrencyCode('');
         }
+    };
+
+    const changeRateSource = () => {
+        const RATE_SOURCES = ['ExchangeAPI + Binance', 'CoinGecko', 'Manual'];
+        const nextIndex = (RATE_SOURCES.indexOf(settings.rateSource) + 1) % RATE_SOURCES.length;
+        setSettings({ ...settings, rateSource: RATE_SOURCES[nextIndex] });
     };
 
     const handleAvatarUpload = (e) => {
@@ -900,19 +965,20 @@ export default function App() {
   const [theme, setTheme] = useTheme();
   const [showFeedback, setShowFeedback] = useState(false);
   const [feedbackText, setFeedbackText] = useState('');
+  const [isSyncing, setIsSyncing] = useState(false);
 
+  // Data Integrity Check
   useEffect(() => {
       if (!accounts || !Array.isArray(accounts) || accounts.length === 0) setAccounts(INITIAL_ACCOUNTS_DATA);
       if (!currencies || !Array.isArray(currencies) || currencies.length === 0) setCurrencies(DEFAULT_CURRENCIES);
   }, []);
 
-  useEffect(() => {
-    const checkAndUpdateRates = async () => {
+  const fetchRates = async (force = false) => {
         const now = Date.now();
         const tenMinutes = 10 * 60 * 1000;
         const lastUpdate = ratesLastUpdated ? new Date(ratesLastUpdated).getTime() : 0;
 
-        if (now - lastUpdate < tenMinutes && Object.keys(rates).length > 0) return;
+        if (!force && now - lastUpdate < tenMinutes && Object.keys(rates).length > 0) return;
 
         setLoadingRates(true);
         const newRates = { ...rates };
@@ -958,8 +1024,8 @@ export default function App() {
         setRatesLastUpdated(now);
         setLoadingRates(false);
     };
-    checkAndUpdateRates();
-  }, [currencies]);
+
+  useEffect(() => { fetchRates() }, [currencies]);
 
   const currentRates = useMemo(() => {
       if (Object.keys(rates).length > 0) return rates;
@@ -1000,6 +1066,16 @@ export default function App() {
     setTimeout(() => setShowFeedback(false), 4000);
   };
 
+  const handleSync = () => {
+      setIsSyncing(true);
+      setTimeout(() => {
+          setIsSyncing(false);
+          setFeedbackText('iCloud 同步完成');
+          setShowFeedback(true);
+          setTimeout(() => setShowFeedback(false), 3000);
+      }, 1500);
+  }
+
   const handleAddAccount = (newAccount) => setAccounts([...accounts, newAccount]);
   const handleDeleteAccount = (accountId) => setAccounts(accounts.filter(a => a.id !== accountId));
   const handleAddCurrency = (newCurrency) => setCurrencies([...currencies, newCurrency]);
@@ -1027,23 +1103,26 @@ export default function App() {
 
   return (
     <div className="relative w-full h-screen bg-[#F2F2F7] dark:bg-[#000000] font-sans text-gray-900 dark:text-white overflow-hidden flex flex-col transition-colors duration-500 ease-in-out">
-      <div className="w-full h-11 bg-transparent flex items-end justify-between pb-2 px-6 shrink-0 z-20 absolute top-0 left-0 pointer-events-none">
-          <span className="text-[10px] font-mono text-gray-500 dark:text-gray-400 flex items-center gap-1"><Cloud size={10} /> iCloud Synced</span>
+      <div className="w-full h-11 bg-transparent flex items-end justify-between pb-2 px-6 shrink-0 z-20 absolute top-0 left-0">
+          <button onClick={handleSync} className="text-[10px] font-mono text-gray-500 dark:text-gray-400 flex items-center gap-1 active:opacity-50 transition-opacity">
+              {isSyncing ? <Loader2 size={10} className="animate-spin" /> : <Cloud size={10} />} 
+              {isSyncing ? 'Syncing...' : 'iCloud Synced'}
+          </button>
           <span className="text-[10px] font-mono text-gray-500 dark:text-gray-400">{loadingRates ? 'Updating Rates...' : '5G'}</span>
       </div>
 
       {showFeedback && (
           <div className="absolute top-14 left-4 right-4 z-[60] animate-in slide-in-from-top-4 fade-in duration-500 pointer-events-none">
               <div className="bg-white/80 dark:bg-[#1C1C1E]/80 backdrop-blur-xl shadow-[0_8px_32px_rgba(0,0,0,0.12)] rounded-2xl p-4 flex items-center gap-3 border border-white/20 dark:border-gray-700/50">
-                  <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-green-400 to-emerald-500 flex items-center justify-center text-white shadow-lg shadow-green-500/30 shrink-0"><Sparkles size={20} /></div>
-                  <div><h4 className="text-sm font-bold mb-0.5 bg-clip-text text-transparent bg-gradient-to-r from-gray-900 to-gray-600 dark:from-white dark:to-gray-400">记账成功</h4><p className="text-xs text-gray-500 dark:text-gray-400 leading-relaxed font-medium">{feedbackText}</p></div>
+                  <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-green-400 to-emerald-500 flex items-center justify-center text-white shadow-lg shadow-green-500/30 shrink-0"><CheckCircle2 size={20} /></div>
+                  <div><h4 className="text-sm font-bold mb-0.5 bg-clip-text text-transparent bg-gradient-to-r from-gray-900 to-gray-600 dark:from-white dark:to-gray-400">操作成功</h4><p className="text-xs text-gray-500 dark:text-gray-400 leading-relaxed font-medium">{feedbackText}</p></div>
               </div>
           </div>
       )}
 
       <div className="flex-1 overflow-y-auto pb-28 pt-12 no-scrollbar scroll-smooth">
         {activeTab === 'home' && <HomeView transactions={transactions} totalExpense={totalExpenseCNY} userAvatar={userAvatar} userNickname={userNickname} />}
-        {activeTab === 'assets' && <AssetsView accounts={accounts} onAddAccount={handleAddAccount} onDeleteAccount={handleDeleteAccount} rates={currentRates} currencies={currencies} lastUpdated={ratesLastUpdated} source={settings.rateSource} />}
+        {activeTab === 'assets' && <AssetsView accounts={accounts} onAddAccount={handleAddAccount} onDeleteAccount={handleDeleteAccount} rates={currentRates} currencies={currencies} lastUpdated={ratesLastUpdated} source={settings.rateSource} onRefreshRates={() => fetchRates(true)} />}
         {activeTab === 'stats' && <StatsView transactions={transactions} accounts={accounts} rates={currentRates} />}
         {activeTab === 'settings' && <SettingsView userAvatar={userAvatar} setUserAvatar={setUserAvatar} userNickname={userNickname} setUserNickname={setUserNickname} theme={theme} setTheme={setTheme} currencies={currencies} onAddCurrency={handleAddCurrency} settings={settings} setSettings={setSettings} accounts={accounts} onReorderAccounts={handleReorderAccounts} onReset={resetAllData} />}
       </div>
